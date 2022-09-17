@@ -88,7 +88,7 @@ static ngx_int_t ngx_http_check_auth_handler(ngx_http_request_t *r)
 {
 	ngx_http_check_auth_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_check_auth_module);
 	if (conf->check_auth != 1)
-		return NGX_ERROR;
+		return NGX_OK;
 	// ngx_str_t                  var = ngx_string("uri");
 	// ngx_uint_t                 key = ngx_hash_key(var.data, var.len);
 	// ngx_http_variable_value_t *vv  = ngx_http_get_variable(r, &var, key);
