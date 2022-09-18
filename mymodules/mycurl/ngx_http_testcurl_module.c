@@ -472,6 +472,34 @@ static int parse_http_resp(u_char *readbuf, int n)
 	return (0);
 }
 
+__attribute_maybe_unused__ int send_header_if_needed(ngx_http_request_t *r)
+{
+	ngx_int_t rc;
+
+	if (!r->header_sent)
+	{
+		if (r->headers_out.status == 0)
+		{
+			r->headers_out.status = NGX_HTTP_OK;
+		}
+
+		if (ngx_http_set_content_type(r) != NGX_OK)
+		{
+			return NGX_ERROR;
+		}
+
+		ngx_http_clear_content_length(r);
+		ngx_http_clear_accept_ranges(r);
+
+
+		rc = ngx_http_send_header(r);
+		// ctx->header_sent = 1;
+		return rc;
+	}
+	return NGX_OK;
+}
+
+
 static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 {
 	ngx_connection_t   *c = ev->data;
@@ -516,6 +544,39 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 			}
 			break;
 		}
+		ngx_http_complex_value_t cv;
+		ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
+		u_char retvalue[] = "return from test curl";
+		cv.value.len = sizeof(retvalue);
+		cv.value.data = retvalue;
+
+		if (!r->pool)
+		{
+			r->pool = ngx_create_pool(128, r->connection->log);
+		}
+		int sendheadret = 0;
+		// sendheadret = send_header_if_needed(r);
+
+		{
+			if (r->headers_out.status == 0)
+			{
+				r->headers_out.status = NGX_HTTP_OK;
+			}
+
+			if (ngx_http_set_content_type(r) != NGX_OK)
+			{
+				// return NGX_ERROR;
+				printf("set content type failed\n");
+			}
+
+			ngx_http_clear_content_length(r);
+			ngx_http_clear_accept_ranges(r);
+		}
+
+		int ret = ngx_http_send_response(r, NGX_HTTP_OK, NULL, &cv);
+		int ret2 = ngx_http_send_special(r, NGX_HTTP_LAST);
+		printf("send http resp, sendheadret = %d, ret = %d, %d\n", sendheadret, ret, ret2);
+		ngx_http_finalize_request(r, NGX_OK);
 	}
 }
 
@@ -525,6 +586,41 @@ static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
 	if (conf->use_testcurl != 1) {
 		return NGX_OK;
 	}
+
+	ngx_http_complex_value_t cv;
+	ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
+	u_char retvalue[] = "return from test curl\r\n";
+	cv.value.len      = sizeof(retvalue) - 1;
+	cv.value.data     = retvalue;
+
+	if (!r->pool)
+	{
+		r->pool = ngx_create_pool(128, r->connection->log);
+	}
+
+		{
+			if (r->headers_out.status == 0)
+			{
+				r->headers_out.status = NGX_HTTP_OK;
+			}
+
+			if (ngx_http_set_content_type(r) != NGX_OK)
+			{
+				// return NGX_ERROR;
+				printf("set content type failed\n");
+			}
+
+			ngx_http_clear_content_length(r);
+			ngx_http_clear_accept_ranges(r);
+		}
+
+	int sendheadret = 0;
+	int ret         = ngx_http_send_response(r, NGX_HTTP_OK, NULL, &cv);
+	int ret2        = ngx_http_send_special(r, NGX_HTTP_LAST);
+	printf("send http resp, sendheadret = %d, ret = %d, %d\n", sendheadret, ret, ret2);
+	ngx_http_finalize_request(r, NGX_OK);
+	return NGX_OK;
+
 
 	// ngx_parse_url    //域名解析
     // u->peer.log = r->connection->log;
