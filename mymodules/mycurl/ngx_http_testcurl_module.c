@@ -15,6 +15,32 @@ typedef struct
 	ngx_int_t use_testcurl;
 } ngx_http_use_testcurl_loc_conf_t;
 
+typedef struct testcurl_conn_data_s
+{
+	struct testcurl_conn_data_s *next;
+
+	ngx_str_t           addr_name;
+	ngx_connection_t   *c;
+	ngx_http_request_t *request;
+	ngx_chain_t         send_buf;
+} testcurl_conn_data;
+
+typedef struct
+{
+	testcurl_conn_data *head;
+} testcurl_ctx_t;
+
+__attribute_maybe_unused__ static testcurl_conn_data *add_conn_data(ngx_pool_t *pool, testcurl_ctx_t *ctx)
+{
+	testcurl_conn_data **node = &ctx->head;
+	while (*node)
+	{
+		node = &((*node)->next);
+	}
+	*node = ngx_pcalloc(pool, sizeof(testcurl_conn_data));
+	return *node;
+}
+
 static char *ngx_set_testcurl(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static ngx_command_t ngx_http_testcurl_commands[] = {
@@ -199,12 +225,6 @@ static ngx_int_t ngx_http_testcurl_init(ngx_conf_t *cf)
 	*h = ngx_http_testcurl_handler;
 	return NGX_OK;
 }
-
-typedef struct
-{
-	ngx_str_t addr_name;
-	ngx_connection_t *c;
-} testcurl_conn_data;
 
 static ngx_int_t ngx_http_testcurl_connect(ngx_http_request_t *r, testcurl_conn_data *conn_data)
 {
@@ -503,7 +523,8 @@ __attribute_maybe_unused__ int send_header_if_needed(ngx_http_request_t *r)
 static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 {
 	ngx_connection_t   *c = ev->data;
-	ngx_http_request_t *r = c->data;
+	testcurl_conn_data *conn_data = c->data;
+	ngx_http_request_t *r = conn_data->request;
 	UNUSED(r);
 
 	if (ev->write == 1)
@@ -589,21 +610,29 @@ static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
 		return NGX_OK;
 	}
 
+	testcurl_ctx_t *ctx = ngx_pcalloc(r->pool, sizeof(testcurl_ctx_t));
+	if (ctx == NULL)
+	{
+		return NGX_ERROR;
+	}
+	ngx_http_set_ctx(r, ctx, ngx_http_testcurl_module);
+
 	// ngx_parse_url    //域名解析
     // u->peer.log = r->connection->log;
     // u->peer.log_error = NGX_ERROR_ERR;
 	// ngx_event_connect_peer(ngx_peer_connection_t *pc)	;
 
-	testcurl_conn_data conn_data;
-	ngx_str_set(&conn_data.addr_name, "127.0.0.1:9090/lua_test4?a=111&b=22");
-	int rc = ngx_http_testcurl_connect(r, &conn_data);
+	testcurl_conn_data *conn_data = add_conn_data(r->pool, ctx);
+	conn_data->request = r;
+	ngx_str_set(&conn_data->addr_name, "127.0.0.1:9090/lua_test4?a=111&b=22");
+	int rc = ngx_http_testcurl_connect(r, conn_data);
 
 	ngx_connection_t *c;	
-    c = conn_data.c;
+    c = conn_data->c;
 
     c->requests++;
 
-    c->data = r;
+    c->data = conn_data;
 
     c->write->handler = ngx_testcurl_rwevent_handler;
     c->read->handler = ngx_testcurl_rwevent_handler;
