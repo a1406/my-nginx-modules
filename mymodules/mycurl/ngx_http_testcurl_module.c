@@ -3,6 +3,7 @@
 #include <ngx_http.h>
 #include "ngx_http_core_module.h"
 #include "llhttp/llhttp.h"
+#include "mybuf.h"
 
 // #include <curl/curl.h>
 #include <assert.h>
@@ -22,7 +23,9 @@ typedef struct testcurl_conn_data_s
 	ngx_str_t           addr_name;
 	ngx_connection_t   *c;
 	ngx_http_request_t *request;
-	ngx_chain_t         send_buf;
+
+	mydefaultbuf_t send_buf;
+	mydefaultbuf_t recv_buf;
 } testcurl_conn_data;
 
 typedef struct
@@ -30,6 +33,7 @@ typedef struct
 	testcurl_conn_data *head;
 } testcurl_ctx_t;
 
+static void generate_send_buf(testcurl_conn_data *conn_data);
 __attribute_maybe_unused__ static testcurl_conn_data *add_conn_data(ngx_pool_t *pool, testcurl_ctx_t *ctx)
 {
 	testcurl_conn_data **node = &ctx->head;
@@ -38,6 +42,9 @@ __attribute_maybe_unused__ static testcurl_conn_data *add_conn_data(ngx_pool_t *
 		node = &((*node)->next);
 	}
 	*node = ngx_pcalloc(pool, sizeof(testcurl_conn_data));
+	(*node)->send_buf.size = MYDEFAULT_BUF_SIZE;
+	(*node)->recv_buf.size = MYDEFAULT_BUF_SIZE;
+	
 	return *node;
 }
 
@@ -316,6 +323,20 @@ static ngx_int_t ngx_http_testcurl_connect(ngx_http_request_t *r, testcurl_conn_
     ngx_log_debug3(NGX_LOG_DEBUG_EVENT, log, 0,
                    "connect to %V, fd:%d #%uA", &conn_data->addr_name, s, c->number);
 
+    if (c->pool == NULL) {
+
+        /* we need separate pool here to be able to cache SSL connections */
+
+        c->pool = ngx_create_pool(128, r->connection->log);
+        if (c->pool == NULL) {
+            // ngx_http_upstream_finalize_request(r, u,
+            //                                    NGX_HTTP_INTERNAL_SERVER_ERROR);
+			goto failed;
+        }
+    }
+	
+	generate_send_buf(conn_data);
+
     rc = connect(s, &u.sockaddr.sockaddr, u.socklen);
     // rc = connect(s, NULL, u.socklen);	
     if (rc == -1) {
@@ -404,25 +425,44 @@ failed:
 	
 }
 
-static int ngx_testcurl_send(ngx_connection_t *c, u_char *buf, int buflen)
+static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c, u_char *buf, int buflen)
 {
-	int n = c->send(c, buf, buflen);
-	if (n > 0)
-		return n;
-	if (n == NGX_ERROR)
+	ngx_connection_t *c = conn_data->c;
+	mybuf_t *buf = (mybuf_t *)&(conn_data->send_buf);
+	while(buf)
 	{
-		// TODO:
-		c->error        = 1;
-		// u->socket_errno = ngx_socket_errno;
-		return n;
+		int buflen = mybuf_len(buf);
+		if (buflen > 0)
+		{
+			u_char *buf_ = &buf->buf[buf->used];
+			int     n    = c->send(c, buf_, buflen);
+			if (n == NGX_ERROR)
+			{
+				// TODO:
+				c->error = 1;
+				// u->socket_errno = ngx_socket_errno;
+				return n;
+			}
+			if (n == 0)
+			{
+				// TODO:
+				c->error = 1;
+				// u->socket_errno = ngx_socket_errno;
+				return n;
+			}
+			if (n < buflen)
+			{
+				if (ngx_handle_write_event(c->write, 0) != NGX_OK)
+				{
+					// TODO:
+					c->error = 1;
+					return -1;
+				}
+				return 0;
+			}
+		}
+		buf = buf->next;
 	}
-	
-		//n == NGX_AGAIN
-	if (ngx_handle_write_event(c->write, 0) != NGX_OK)
-	{
-		// TODO:
-	}
-	
 	return 0;
 }
 
@@ -521,6 +561,72 @@ __attribute_maybe_unused__ int send_header_if_needed(ngx_http_request_t *r)
 	return NGX_OK;
 }
 
+__attribute_maybe_unused__ static void generate_send_buf(testcurl_conn_data *conn_data)
+{
+	// GET /path1/path2/command?a=22&b=44 HTTP/1.1
+	// Host: localhost:9090
+	// User-Agent: curl/7.85.0
+	// Accept: */*
+
+	// "GET /lua_test4?a=111&b=22 HTTP/1.1\r\n"
+	// "Host: localhost:9090\r\n"
+	// "User-Agent: curl/7.85.0\r\n"
+	// "Accept: */*\r\n"
+	// "\r\n";
+
+	ngx_pool_t *pool = conn_data->c->pool;
+	const ngx_str_t *url = &conn_data->addr_name;
+	char *p = ngx_strchr(url->data, '/');
+	if (!p)
+	{
+		ngx_str_t t;
+		ngx_str_set(&t, "GET / HTTP/1.1\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+
+		ngx_str_set(&t, "Host: ");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));		
+		my_append_str(pool, &conn_data->addr_name, (mybuf_t *)&(conn_data->send_buf));
+		ngx_str_set(&t, "\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));		
+
+		ngx_str_set(&t, "User-Agent: curl/7.85.0\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+
+		ngx_str_set(&t, "Accept: */*\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+
+		ngx_str_set(&t, "\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+	}
+	else
+	{
+		ngx_str_t t;
+		ngx_str_set(&t, "GET ");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+		t.data = (u_char *)p;
+		t.len = &url->data[url->len] - (u_char *)p;
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));		
+		ngx_str_set(&t, " HTTP/1.1\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+
+		ngx_str_set(&t, "Host: ");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));		
+		t.data = url->data;
+		t.len = (u_char *)p - url->data;
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+		ngx_str_set(&t, "\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));		
+
+		ngx_str_set(&t, "User-Agent: curl/7.85.0\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+
+		ngx_str_set(&t, "Accept: */*\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+
+		ngx_str_set(&t, "\r\n");
+		my_append_str(pool, &t, (mybuf_t *)&(conn_data->send_buf));
+	}
+}
 
 static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 {
@@ -536,18 +642,19 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 		// User-Agent: curl/7.85.0
 		// Accept: */*
 
-		static int sended = 0;
-		if (sended == 0)
-		{
-			u_char sendbuf[] =
-			    "GET /lua_test4?a=111&b=22 HTTP/1.1\r\n"
-			    "Host: localhost:9090\r\n"
-			    "User-Agent: curl/7.85.0\r\n"
-			    "Accept: */*\r\n"
-			    "\r\n";
-			ngx_testcurl_send(c, sendbuf, sizeof(sendbuf));
-			sended = 1;
-		}
+		// static int sended = 0;
+		// if (sended == 0)
+		// {
+		// 	u_char sendbuf[] =
+		// 	    "GET /lua_test4?a=111&b=22 HTTP/1.1\r\n"
+		// 	    "Host: localhost:9090\r\n"
+		// 	    "User-Agent: curl/7.85.0\r\n"
+		// 	    "Accept: */*\r\n"
+		// 	    "\r\n";
+		// 	ngx_testcurl_send(c, sendbuf, sizeof(sendbuf));
+		// 	sended = 1;
+		// }
+		ngx_testcurl_send(conn_data);
 	}
 	else
 	{
