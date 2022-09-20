@@ -184,12 +184,15 @@ ngx_int_t init_testcurl_process(ngx_cycle_t *cycle)
 	return NGX_OK;	
 }
 
+static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r);
 static char *ngx_set_testcurl(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
 	char *rv = NULL;
-
+	ngx_http_core_loc_conf_t *clcf;
+	
 	rv = ngx_conf_set_flag_slot(cf, cmd, conf);
-
+	clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+	clcf->handler = ngx_http_testcurl_handler;
 	return rv;
 }
 
@@ -208,21 +211,20 @@ static void *ngx_http_testcurl_create_loc_conf(ngx_conf_t *cf)
 	return local_conf;
 }
 
-static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_testcurl_init(ngx_conf_t *cf)
 {
-	ngx_http_handler_pt       *h;
-	ngx_http_core_main_conf_t *cmcf;
+	// ngx_http_handler_pt       *h;
+	// ngx_http_core_main_conf_t *cmcf;
 
-	cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+	// cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
-	h = ngx_array_push(&cmcf->phases[NGX_HTTP_CONTENT_PHASE].handlers);
-	if (h == NULL)
-	{
-		return NGX_ERROR;
-	}
+	// h = ngx_array_push(&cmcf->phases[NGX_HTTP_CONTENT_PHASE].handlers);
+	// if (h == NULL)
+	// {
+	// 	return NGX_ERROR;
+	// }
 
-	*h = ngx_http_testcurl_handler;
+	// *h = ngx_http_testcurl_handler;
 	return NGX_OK;
 }
 
@@ -663,7 +665,7 @@ static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
     if (rc == NGX_AGAIN) {
     //     ngx_add_timer(c->write, u->conf->connect_timeout);
     //     return;
-		return NGX_AGAIN;
+		return NGX_DONE;
     }
 	
 	return NGX_OK;	
