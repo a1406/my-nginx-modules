@@ -1,8 +1,9 @@
 #ifndef MYBUF_H
 #define MYBUF_H
 
-#include <ngx_config.h>
-#include <ngx_core.h>
+// #include <ngx_config.h>
+// #include <ngx_core.h>
+#include "ut.h"
 
 typedef struct mybuf_s
 {

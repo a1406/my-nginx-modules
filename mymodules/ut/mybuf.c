@@ -7,7 +7,6 @@ mybuf_t *alloc_mybuf(ngx_pool_t *pool, size_t size)
 	return ret;
 }
 
-
 void my_append_str(ngx_pool_t *pool, const ngx_str_t *str, mybuf_t *mybuf)
 {
 	mybuf_t *last = mybuf;

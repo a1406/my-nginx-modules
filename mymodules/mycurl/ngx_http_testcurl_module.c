@@ -26,6 +26,9 @@ typedef struct testcurl_conn_data_s
 
 	mydefaultbuf_t send_buf;
 	mydefaultbuf_t recv_buf;
+
+	llhttp_t          parser;
+	llhttp_settings_t settings;
 } testcurl_conn_data;
 
 typedef struct
@@ -431,11 +434,21 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 	mybuf_t *buf = (mybuf_t *)&(conn_data->send_buf);
 	while(buf)
 	{
-		int buflen = mybuf_len(buf);
+		int buflen = buf->used - buf->start;
 		if (buflen > 0)
 		{
-			u_char *buf_ = &buf->buf[buf->used];
+			u_char *buf_ = &buf->buf[buf->start];
 			int     n    = c->send(c, buf_, buflen);
+			if (n == NGX_AGAIN)
+			{
+				if (ngx_handle_write_event(c->write, 0) != NGX_OK)
+				{
+					// TODO:
+					c->error = 1;
+					return -1;
+				}
+				return 0;
+			}
 			if (n == NGX_ERROR)
 			{
 				// TODO:
@@ -450,6 +463,14 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 				// u->socket_errno = ngx_socket_errno;
 				return n;
 			}
+			if (n < 0)
+			{
+				// TODO:
+				c->error = 1;
+				// u->socket_errno = ngx_socket_errno;
+				return n;
+			}
+			buf->start += n;
 			if (n < buflen)
 			{
 				if (ngx_handle_write_event(c->write, 0) != NGX_OK)
@@ -496,41 +517,41 @@ static int handle_on_body(llhttp_t* llhttp, const char *at, size_t length)
 	return (HPE_OK);		
 }
 
-static int parse_http_resp(u_char *readbuf, int n)
+static int init_parse_http_resp(llhttp_t *parser, llhttp_settings_t *settings)
 {
-	llhttp_t          parser;
-	llhttp_settings_t settings;
+	// llhttp_t          parser;
+	// llhttp_settings_t settings;
 
 	/* Initialize user callbacks and settings */
-	llhttp_settings_init(&settings);
+	llhttp_settings_init(settings);
 
 	/* Set user callback */
-	settings.on_headers_complete = handle_on_headers_complete;
-	settings.on_message_complete = handle_on_message_complete;
-	settings.on_url = handle_on_url;
-	settings.on_status = handle_on_status;
-	settings.on_header_field = handle_on_header_field;
-	settings.on_header_value = handle_on_header_value;
-	settings.on_body = handle_on_body;	
+	settings->on_headers_complete = handle_on_headers_complete;
+	settings->on_message_complete = handle_on_message_complete;
+	settings->on_url = handle_on_url;
+	settings->on_status = handle_on_status;
+	settings->on_header_field = handle_on_header_field;
+	settings->on_header_value = handle_on_header_value;
+	settings->on_body = handle_on_body;	
 
-	llhttp_init(&parser, HTTP_RESPONSE, &settings);
+	llhttp_init(parser, HTTP_RESPONSE, settings);
 
-	enum llhttp_errno err = llhttp_execute(&parser, (const char *)readbuf, n);
-	if (err == HPE_OK)
-	{
-		/* Successfully parsed! */
-		int ret = llhttp_message_needs_eof(&parser);
-		UNUSED(ret);
-		llhttp_errno_t ret2 = llhttp_finish(&parser);
-		UNUSED(ret2);
-		const char* errmsg = llhttp_errno_name(ret2);
-		printf("%s\n", errmsg);
-	}
-	else
-	{
-		fprintf(stderr, "Parse error: %s %s\n", llhttp_errno_name(err),
-		        parser.reason);
-	}
+	// enum llhttp_errno err = llhttp_execute(&parser, (const char *)readbuf, n);
+	// if (err == HPE_OK)
+	// {
+	// 	/* Successfully parsed! */
+	// 	int ret = llhttp_message_needs_eof(&parser);
+	// 	UNUSED(ret);
+	// 	llhttp_errno_t ret2 = llhttp_finish(&parser);
+	// 	UNUSED(ret2);
+	// 	const char* errmsg = llhttp_errno_name(ret2);
+	// 	printf("%s\n", errmsg);
+	// }
+	// else
+	// {
+	// 	fprintf(stderr, "Parse error: %s %s\n", llhttp_errno_name(err),
+	// 	        parser.reason);
+	// }
 	return (0);
 }
 
@@ -658,15 +679,46 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 	}
 	else
 	{
-#define READ_BUF_LEN 1024
-		u_char readbuf[READ_BUF_LEN];
+// #define READ_BUF_LEN 1024
+// 		u_char readbuf[READ_BUF_LEN];
 		for (;;)
 		{
-			int n = c->recv(c, readbuf, READ_BUF_LEN);
+			u_char *p;
+			int len;
+			mybuf_t *buf = get_recv_buf(conn_data->c->pool, &conn_data->recv_buf, &p, &len);
+			int n = c->recv(c, p, len);
 			if (n > 0)
 			{
-				parse_http_resp(readbuf, n);
+				llhttp_t *parser = &conn_data->parser;
+				enum llhttp_errno err = llhttp_execute(parser, (char *)p, n);
+				if (err == HPE_OK)
+				{
+					/* Successfully parsed! */
+					int ret = llhttp_message_needs_eof(parser);
+					UNUSED(ret);
+					llhttp_errno_t ret2 = llhttp_finish(parser);
+					UNUSED(ret2);
+					const char *errmsg = llhttp_errno_name(ret2);
+					printf("%s\n", errmsg);
+				}
+				else
+				{
+					fprintf(stderr, "Parse error: %s %s\n", llhttp_errno_name(err),
+					        parser->reason);
+				}
+
+				buf->used += n;
 				continue;
+			}
+			if (n == NGX_AGAIN)
+			{
+				if (ngx_handle_write_event(c->write, 0) != NGX_OK)
+				{
+					// TODO:
+					c->error = 1;
+					return;
+				}
+				break;
 			}
 			if (n == NGX_ERROR)
 			{
@@ -732,6 +784,7 @@ static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
 	// ngx_event_connect_peer(ngx_peer_connection_t *pc)	;
 
 	testcurl_conn_data *conn_data = add_conn_data(r->pool, ctx);
+	init_parse_http_resp(&conn_data->parser, &conn_data->settings);
 	conn_data->request = r;
 	ngx_str_set(&conn_data->addr_name, "127.0.0.1:9090/lua_test4?a=111&b=22");
 	int rc = ngx_http_testcurl_connect(r, conn_data);
