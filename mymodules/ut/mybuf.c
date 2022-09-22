@@ -59,3 +59,32 @@ mybuf_t *get_recv_buf(ngx_pool_t *pool, mydefaultbuf_t *head, u_char **p, int *l
 	*p = &ret->buf[0];
 	return ret;
 }
+
+size_t get_buf_len(const mybuf_t *buf)
+{
+	size_t ret = 0;
+	while (buf)
+	{
+		ret += buf->used;
+		buf = buf->next;
+	}
+	return ret;
+}
+void get_buf_data(const mybuf_t *buf, char *data)
+{
+	while (buf)
+	{
+		int len = buf->used;
+		memcpy(data, buf->buf, len);
+		data += buf->used;
+		buf = buf->next;
+	}
+}
+char *alloc_buf_data(const mybuf_t *buf)
+{
+	size_t size = get_buf_len(buf);
+	char *ret = (char *)malloc(size + 1);
+	get_buf_data(buf, ret);
+	ret[size] = '\0';
+	return ret;
+}
