@@ -8,13 +8,23 @@
 // #include <curl/curl.h>
 #include <assert.h>
 
+// request->c->data = conn_data;
+// conn_data->request = r;
+// conn_data->parser.data = conn_data;
 
 #define UNUSED(x) (void)(x)
+
+#define APPEND_STR  ("return from test curl\r\n")
+
 
 typedef struct
 {
 	ngx_int_t use_testcurl;
 } ngx_http_use_testcurl_loc_conf_t;
+
+#define SEND_BUF (mybuf_t *)(&conn_data->send_buf)
+#define RECV_BUF (mybuf_t *)(&conn_data->recv_buf)
+#define BODY_BUF (mybuf_t *)(&conn_data->body_buf)
 
 typedef struct testcurl_conn_data_s
 {
@@ -26,6 +36,8 @@ typedef struct testcurl_conn_data_s
 
 	mydefaultbuf_t send_buf;
 	mydefaultbuf_t recv_buf;
+
+	mydefaultbuf_t body_buf;
 
 	llhttp_t          parser;
 	llhttp_settings_t settings;
@@ -431,7 +443,7 @@ failed:
 static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c, u_char *buf, int buflen)
 {
 	ngx_connection_t *c = conn_data->c;
-	mybuf_t *buf = (mybuf_t *)&(conn_data->send_buf);
+	mybuf_t *buf = SEND_BUF;
 	while(buf)
 	{
 		int buflen = buf->used - buf->start;
@@ -444,6 +456,7 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 				if (ngx_handle_write_event(c->write, 0) != NGX_OK)
 				{
 					// TODO:
+					printf("%d: hanle write event failed\n", __LINE__);					
 					c->error = 1;
 					return -1;
 				}
@@ -452,6 +465,7 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 			if (n == NGX_ERROR)
 			{
 				// TODO:
+				printf("%d: send n == NGX_ERROR failed\n", __LINE__);
 				c->error = 1;
 				// u->socket_errno = ngx_socket_errno;
 				return n;
@@ -459,6 +473,7 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 			if (n == 0)
 			{
 				// TODO:
+				printf("%d: send n == 0\n", __LINE__);				
 				c->error = 1;
 				// u->socket_errno = ngx_socket_errno;
 				return n;
@@ -466,6 +481,7 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 			if (n < 0)
 			{
 				// TODO:
+				printf("%d: send n < 0\n", __LINE__);								
 				c->error = 1;
 				// u->socket_errno = ngx_socket_errno;
 				return n;
@@ -476,6 +492,7 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 				if (ngx_handle_write_event(c->write, 0) != NGX_OK)
 				{
 					// TODO:
+					printf("%d: hanle write event failed\n", __LINE__);
 					c->error = 1;
 					return -1;
 				}
@@ -514,6 +531,11 @@ static int handle_on_header_value(llhttp_t* llhttp, const char *at, size_t lengt
 }
 static int handle_on_body(llhttp_t* llhttp, const char *at, size_t length)
 {
+	testcurl_conn_data *conn_data = llhttp->data;
+	ngx_str_t t__;
+	t__.data = (u_char *)at;
+	t__.len  = length;
+	my_append_str(NULL, &t__, (mybuf_t *)(&conn_data->body_buf));
 	return (HPE_OK);		
 }
 
@@ -699,12 +721,19 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 					llhttp_errno_t ret2 = llhttp_finish(parser);
 					UNUSED(ret2);
 					const char *errmsg = llhttp_errno_name(ret2);
-					printf("%s\n", errmsg);
+					if (ret2 != HPE_INVALID_EOF_STATE)
+					{
+						printf("%s\n", errmsg);
+						// c->error = 1;
+						// return;
+					}
 				}
 				else
 				{
 					fprintf(stderr, "Parse error: %s %s\n", llhttp_errno_name(err),
 					        parser->reason);
+					c->error = 1;
+					return;
 				}
 
 				buf->used += n;
@@ -715,6 +744,7 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 				if (ngx_handle_write_event(c->write, 0) != NGX_OK)
 				{
 					// TODO:
+					printf("handle write event failed\n");
 					c->error = 1;
 					return;
 				}
@@ -722,15 +752,23 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 			}
 			if (n == NGX_ERROR)
 			{
+				// TODO:
+				printf("n == NGX_ERROR\n");
 				c->error = 1;
+				return;
 			}
 			break;
 		}
 		ngx_http_complex_value_t cv;
 		ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
-		u_char retvalue[] = "return from test curl\r\n";
-		cv.value.len = sizeof(retvalue) - 1;
-		cv.value.data = retvalue;
+		size_t body_len = get_buf_len(BODY_BUF);
+		size_t retsize = body_len + sizeof(APPEND_STR) - 1;
+		char *retvalue = ngx_pcalloc(r->pool, retsize);
+		get_buf_data(BODY_BUF, retvalue);
+		memcpy(&retvalue[body_len], APPEND_STR, sizeof(APPEND_STR) - 1);
+		// u_char retvalue[] = "return from test curl\r\n";
+		cv.value.len = retsize;
+		cv.value.data = (u_char *)retvalue;
 
 		if (!r->pool)
 		{
@@ -785,6 +823,7 @@ static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
 
 	testcurl_conn_data *conn_data = add_conn_data(r->pool, ctx);
 	init_parse_http_resp(&conn_data->parser, &conn_data->settings);
+	conn_data->parser.data = conn_data;
 	conn_data->request = r;
 	ngx_str_set(&conn_data->addr_name, "127.0.0.1:9090/lua_test4?a=111&b=22");
 	int rc = ngx_http_testcurl_connect(r, conn_data);
