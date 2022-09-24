@@ -302,6 +302,15 @@ static ngx_int_t ngx_http_testcurl_connect(ngx_http_request_t *r, testcurl_conn_
         return NGX_ERROR;
     }
     c = ngx_get_connection(s, log);
+    if (c->pool == NULL) {
+        c->pool = ngx_create_pool(128, r->connection->log);
+        if (c->pool == NULL) {
+            // ngx_http_upstream_finalize_request(r, u,
+            //                                    NGX_HTTP_INTERNAL_SERVER_ERROR);
+			goto failed;
+        }
+    }
+	
 	conn_data->c = c;
     if (c == NULL) {
         if (ngx_close_socket(s) == -1) {
@@ -344,18 +353,6 @@ static ngx_int_t ngx_http_testcurl_connect(ngx_http_request_t *r, testcurl_conn_
     }
     ngx_log_debug3(NGX_LOG_DEBUG_EVENT, log, 0,
                    "connect to %V, fd:%d #%uA", &conn_data->addr_name, s, c->number);
-
-    if (c->pool == NULL) {
-
-        /* we need separate pool here to be able to cache SSL connections */
-
-        c->pool = ngx_create_pool(128, r->connection->log);
-        if (c->pool == NULL) {
-            // ngx_http_upstream_finalize_request(r, u,
-            //                                    NGX_HTTP_INTERNAL_SERVER_ERROR);
-			goto failed;
-        }
-    }
 	
 	generate_send_buf(conn_data);
 
@@ -680,37 +677,59 @@ __attribute_maybe_unused__ static void generate_send_buf(testcurl_conn_data *con
 	}
 }
 
+static void testcurl_send_resp(testcurl_conn_data *conn_data)
+{
+	ngx_http_request_t *r = conn_data->request;	
+	ngx_http_complex_value_t cv;
+	ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
+	size_t body_len = get_buf_len(BODY_BUF);
+	size_t retsize  = body_len + sizeof(APPEND_STR) - 1;
+	char  *retvalue = ngx_pcalloc(r->pool, retsize);
+	get_buf_data(BODY_BUF, retvalue);
+	memcpy(&retvalue[body_len], APPEND_STR, sizeof(APPEND_STR) - 1);
+	// u_char retvalue[] = "return from test curl\r\n";
+	cv.value.len  = retsize;
+	cv.value.data = (u_char *)retvalue;
+
+	int sendheadret = 0;
+	// sendheadret = send_header_if_needed(r);
+
+	{
+		if (r->headers_out.status == 0)
+		{
+			r->headers_out.status = NGX_HTTP_OK;
+		}
+
+		if (ngx_http_set_content_type(r) != NGX_OK)
+		{
+			// return NGX_ERROR;
+			printf("set content type failed\n");
+		}
+
+		ngx_http_clear_content_length(r);
+		ngx_http_clear_accept_ranges(r);
+	}
+
+	r->connection->data = r;
+	int ret = 0, ret2 = 0;
+	ret = ngx_http_send_response(r, NGX_HTTP_OK, NULL, &cv);
+	// int ret2 = ngx_http_send_special(r, NGX_HTTP_LAST);
+	printf("send http resp, sendheadret = %d, ret = %d, %d\n", sendheadret, ret, ret2);
+	// ngx_http_finalize_request(r, NGX_OK);
+}
+
 static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 {
 	ngx_connection_t   *c = ev->data;
 	testcurl_conn_data *conn_data = c->data;
-	ngx_http_request_t *r = conn_data->request;
+//	ngx_http_request_t *r = conn_data->request;
 
 	if (ev->write == 1)
 	{
-		// GET /path1/path2/command?a=22&b=44 HTTP/1.1
-		// Host: localhost:9090
-		// User-Agent: curl/7.85.0
-		// Accept: */*
-
-		// static int sended = 0;
-		// if (sended == 0)
-		// {
-		// 	u_char sendbuf[] =
-		// 	    "GET /lua_test4?a=111&b=22 HTTP/1.1\r\n"
-		// 	    "Host: localhost:9090\r\n"
-		// 	    "User-Agent: curl/7.85.0\r\n"
-		// 	    "Accept: */*\r\n"
-		// 	    "\r\n";
-		// 	ngx_testcurl_send(c, sendbuf, sizeof(sendbuf));
-		// 	sended = 1;
-		// }
 		ngx_testcurl_send(conn_data);
 	}
 	else
 	{
-// #define READ_BUF_LEN 1024
-// 		u_char readbuf[READ_BUF_LEN];
 		for (;;)
 		{
 			u_char *p;
@@ -749,10 +768,10 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 			}
 			if (n == NGX_AGAIN)
 			{
-				if (ngx_handle_write_event(c->write, 0) != NGX_OK)
+				if (ngx_handle_read_event(c->read, 0) != NGX_OK)
 				{
 					// TODO:
-					printf("handle write event failed\n");
+					printf("handle read event failed\n");
 					c->error = 1;
 					return;
 				}
@@ -765,46 +784,15 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 				c->error = 1;
 				return;
 			}
+			if (n == 0)
+			{
+				printf("n == 0, close connection\n");
+				ngx_http_close_connection(c);
+				return;
+			}
 			break;
 		}
-		
-		ngx_http_complex_value_t cv;
-		ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
-		size_t body_len = get_buf_len(BODY_BUF);
-		size_t retsize = body_len + sizeof(APPEND_STR) - 1;
-		char *retvalue = ngx_pcalloc(r->pool, retsize);
-		get_buf_data(BODY_BUF, retvalue);
-		memcpy(&retvalue[body_len], APPEND_STR, sizeof(APPEND_STR) - 1);
-		// u_char retvalue[] = "return from test curl\r\n";
-		cv.value.len = retsize;
-		cv.value.data = (u_char *)retvalue;
-
-		int sendheadret = 0;
-		// sendheadret = send_header_if_needed(r);
-
-		{
-			if (r->headers_out.status == 0)
-			{
-				r->headers_out.status = NGX_HTTP_OK;
-			}
-
-			if (ngx_http_set_content_type(r) != NGX_OK)
-			{
-				// return NGX_ERROR;
-				printf("set content type failed\n");
-			}
-
-			ngx_http_clear_content_length(r);
-			ngx_http_clear_accept_ranges(r);
-		}
-
-		r->connection->data = r;
-		int ret = 0, ret2 = 0;
-		ret = ngx_http_send_response(r, NGX_HTTP_OK, NULL, &cv);
-		// int ret2 = ngx_http_send_special(r, NGX_HTTP_LAST);
-		printf("send http resp, sendheadret = %d, ret = %d, %d\n", sendheadret, ret, ret2);
-		// ngx_http_finalize_request(r, NGX_OK);
-
+		testcurl_send_resp(conn_data);
 	}
 }
 
