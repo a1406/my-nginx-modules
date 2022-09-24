@@ -26,21 +26,29 @@ typedef struct
 #define RECV_BUF (mybuf_t *)(&conn_data->recv_buf)
 #define BODY_BUF (mybuf_t *)(&conn_data->body_buf)
 
+typedef enum
+{
+	CONN_DATA_FINISH_INIT,
+	CONN_DATA_FINISH_HEAD,
+	CONN_DATA_FINISH_BODY,
+} CONN_DATA_FINISH;
+
 typedef struct testcurl_conn_data_s
 {
 	struct testcurl_conn_data_s *next;
 
-	ngx_str_t         addr_name;
-	ngx_connection_t *c;
+	ngx_str_t           addr_name;
+	ngx_connection_t   *c;
 	ngx_http_request_t *request;
 
 	mydefaultbuf_t send_buf;
 	mydefaultbuf_t recv_buf;
-
 	mydefaultbuf_t body_buf;
+	int            finished;
 
 	llhttp_t          parser;
 	llhttp_settings_t settings;
+
 } testcurl_conn_data;
 
 typedef struct
@@ -510,12 +518,16 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 
 static int handle_on_headers_complete(llhttp_t* llhttp)
 {
-	printf("head complete\n");
+	// printf("head complete\n");
+	testcurl_conn_data *conn_data = llhttp->data;
+	conn_data->finished = CONN_DATA_FINISH_HEAD;
 	return (HPE_OK);	
 }
 static int handle_on_message_complete(llhttp_t* llhttp)
 {
-	printf("body complete\n");	
+	// printf("body complete\n");
+	testcurl_conn_data *conn_data = llhttp->data;	
+	conn_data->finished = CONN_DATA_FINISH_BODY;	
 	return (HPE_OK);	
 }
 
@@ -691,7 +703,7 @@ static void testcurl_send_resp(testcurl_conn_data *conn_data)
 	cv.value.len  = retsize;
 	cv.value.data = (u_char *)retvalue;
 
-	int sendheadret = 0;
+	// int sendheadret = 0;
 	// sendheadret = send_header_if_needed(r);
 
 	{
@@ -711,11 +723,11 @@ static void testcurl_send_resp(testcurl_conn_data *conn_data)
 	}
 
 	r->connection->data = r;
-	int ret = 0, ret2 = 0;
-	ret = ngx_http_send_response(r, NGX_HTTP_OK, NULL, &cv);
+	// int ret = 0, ret2 = 0;
+	ngx_http_send_response(r, NGX_HTTP_OK, NULL, &cv);
 	// int ret2 = ngx_http_send_special(r, NGX_HTTP_LAST);
-	printf("send http resp, sendheadret = %d, ret = %d, %d\n", sendheadret, ret, ret2);
-	// ngx_http_finalize_request(r, NGX_OK);
+	// printf("send http resp, sendheadret = %d, ret = %d, %d\n", sendheadret, ret, ret2);
+	ngx_http_finalize_request(r, NGX_OK);
 }
 
 static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
@@ -788,11 +800,28 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 			{
 				printf("n == 0, close connection\n");
 				ngx_http_close_connection(c);
+				
+				// ngx_int_t event;
+				// if (ngx_event_flags & NGX_USE_CLEAR_EVENT)
+				// {
+				// 	/* kqueue */
+				// 	event = NGX_CLEAR_EVENT;
+				// }
+				// else
+				// {
+				// 	/* select, poll, /dev/poll */
+				// 	event = NGX_LEVEL_EVENT;
+				// }
+				// ngx_del_event(
 				return;
 			}
 			break;
 		}
-		testcurl_send_resp(conn_data);
+		if (conn_data->finished == CONN_DATA_FINISH_BODY)
+		{
+			testcurl_send_resp(conn_data);
+			ngx_http_close_connection(c);
+		}
 	}
 }
 
