@@ -80,10 +80,10 @@ void get_buf_data(const mybuf_t *buf, char *data)
 		buf = buf->next;
 	}
 }
-char *alloc_buf_data(const mybuf_t *buf)
+char *alloc_buf_data(ngx_pool_t *pool, const mybuf_t *buf)
 {
 	size_t size = get_buf_len(buf);
-	char *ret = (char *)malloc(size + 1);
+	char *ret = (char *)ngx_pcalloc(pool, size + 1);
 	get_buf_data(buf, ret);
 	ret[size] = '\0';
 	return ret;

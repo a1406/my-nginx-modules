@@ -65,7 +65,7 @@ static mybuf_t g_last;
 static PARSE_PHASE g_phase;
 static void print_last_buf(mybuf_t *buf, const char *prefix)
 {
-	char *t = alloc_buf_data(buf);
+	char *t = alloc_buf_data(NULL, buf);
 	printf("%s: %s\n", prefix, t);
 }
 
@@ -215,6 +215,7 @@ int main(int argc, char *argv[])
 		{
 			fprintf(stderr, "Parse error: %s %s\n", llhttp_errno_name(err),
 			        parser.reason);
+			break;
 		}
 	}
 	printf("recv finished\n");

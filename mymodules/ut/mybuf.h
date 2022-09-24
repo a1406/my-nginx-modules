@@ -37,6 +37,6 @@ mybuf_t *get_recv_buf(ngx_pool_t *pool, mydefaultbuf_t *head, u_char **p, int *l
 
 size_t get_buf_len(const mybuf_t *buf);
 void get_buf_data(const mybuf_t *buf, char *data);
-char *alloc_buf_data(const mybuf_t *buf);
+char *alloc_buf_data(ngx_pool_t *pool, const mybuf_t *buf);
 
 #endif /* MYBUF_H */
