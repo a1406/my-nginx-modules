@@ -31,6 +31,7 @@ typedef enum
 	CONN_DATA_FINISH_INIT,
 	CONN_DATA_FINISH_HEAD,
 	CONN_DATA_FINISH_BODY,
+	CONN_DATA_FINISH_KEEPALIVE,
 } CONN_DATA_FINISH;
 
 typedef struct testcurl_conn_data_s
@@ -49,12 +50,64 @@ typedef struct testcurl_conn_data_s
 	llhttp_t          parser;
 	llhttp_settings_t settings;
 
+		//for keepalive
+	ngx_str_t host;
+	in_port_t port;
 } testcurl_conn_data;
 
 typedef struct
 {
 	testcurl_conn_data *head;
 } testcurl_ctx_t;
+
+// 嫌麻烦，随便搞个链表，主要是试一下keepalive
+typedef struct
+{
+	testcurl_conn_data *head;	
+} testcurl_cache_t;
+__attribute_maybe_unused__ static testcurl_cache_t keepalive_cache;
+
+__attribute_maybe_unused__ static int add_to_keepalive_cache(testcurl_conn_data *node)
+{
+	if (node->finished != CONN_DATA_FINISH_BODY)
+		return -1;
+
+	node->next = keepalive_cache.head;	
+		//todo addr_name
+	node->request = NULL;
+	memset(&node->send_buf, 0, sizeof(mydefaultbuf_t));
+	memset(&node->recv_buf, 0, sizeof(mydefaultbuf_t));
+	memset(&node->body_buf, 0, sizeof(mydefaultbuf_t));	
+	node->finished = CONN_DATA_FINISH_KEEPALIVE;
+	llhttp_reset(&node->parser);
+
+	keepalive_cache.head = node;
+	return (0);
+}
+__attribute_maybe_unused__ static testcurl_conn_data * get_from_keepalive_cache(ngx_str_t *addr, in_port_t port)
+{
+	testcurl_conn_data *head = keepalive_cache.head;
+	testcurl_conn_data *pre = NULL;
+	while (head)
+	{
+		if (head->port == port &&
+			head->host.len == addr->len &&
+			ngx_memcmp(head->host.data, addr->data, addr->len) == 0)
+		{
+			if (pre)
+				pre->next = head->next;
+			else
+				keepalive_cache.head = head->next;
+
+			head->next = NULL;
+			head->finished = CONN_DATA_FINISH_INIT;
+			return head;
+		}
+		pre = head;
+		head = head->next;
+	}
+	return (NULL);
+}
 
 static void generate_send_buf(testcurl_conn_data *conn_data);
 static int init_parse_http_resp(llhttp_t *parser, llhttp_settings_t *settings);
@@ -845,7 +898,8 @@ static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
 	// ngx_event_connect_peer(ngx_peer_connection_t *pc)	;
 
 	testcurl_conn_data *conn_data = add_conn_data(r, ctx);
-	ngx_str_set(&conn_data->addr_name, "127.0.0.1:9090/lua_test4?a=111&b=22");
+	// ngx_str_set(&conn_data->addr_name, "127.0.0.1:9090/lua_test4?a=111&b=22");
+	ngx_str_set(&conn_data->addr_name, "baidu.com:9090/lua_test4?a=111&b=22");	
 	int rc = ngx_http_testcurl_connect(r, conn_data);
 
 	ngx_connection_t *c;	
