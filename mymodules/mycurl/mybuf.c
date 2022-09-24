@@ -1,8 +1,11 @@
 #include "mybuf.h"
+#include <assert.h>
 
 mybuf_t *alloc_mybuf(ngx_pool_t *pool, size_t size)
 {
 	mybuf_t *ret = ngx_pcalloc(pool, sizeof(mybuf_t) + size);
+	// mybuf_t *ret = malloc(sizeof(mybuf_t) + size);
+	// memset(ret, 0, sizeof(mybuf_t) + size);
 	ret->size = size;
 	return ret;
 }
@@ -17,7 +20,7 @@ void my_append_str(ngx_pool_t *pool, const ngx_str_t *str, mybuf_t *mybuf)
 
 	int buf_len = mybuf_len(last);
 	int left = str->len - buf_len;
-	if (left < 0)
+	if (left <= 0)
 	{
 		memcpy(&(last->buf[last->used]), str->data, str->len);
 		last->used += str->len;
@@ -42,21 +45,30 @@ mybuf_t *get_recv_buf(ngx_pool_t *pool, mydefaultbuf_t *head, u_char **p, int *l
 	mybuf_t *ret = (mybuf_t *)head;
 	while (mybuf_empty(ret) && ret->next)
 	{
+		assert(ret->size == 1);
 		ret = ret->next;
 	}
 	
 	int n = ret->size - ret->used;
+	assert(n == 0 || n == 1);
 	if (n > 0)
 	{
+		assert(ret->used == 0);
 		*len = n;
 		*p = &ret->buf[ret->used];
 		return ret;
 	}
 	mybuf_t *new_buf = alloc_mybuf(pool, MYDEFAULT_BUF_SIZE);
+	// printf("alloc_mybuf ret %p\n", new_buf);
 	ret->next = new_buf;
+	ret = new_buf;
 
 	*len = MYDEFAULT_BUF_SIZE;
 	*p = &ret->buf[0];
+
+	assert(ret->size == 1);
+	assert(ret->used == 0);
+	assert(ret->next == NULL);	
 	return ret;
 }
 
