@@ -631,7 +631,14 @@ static int ngx_testcurl_empty_recv(testcurl_conn_data *conn_data)
 	for (;;)
 	{
 		int n = c->recv(c, buf, 1024);
-		if (n <= 0)
+		if (n == 0)
+		{
+			printf("n == 0, close connection\n");
+			ngx_http_close_connection(c);
+			delete_from_keepalive_cache(conn_data);
+			return NGX_OK;			
+		}
+		if (n < 0)
 			return NGX_OK;
 	}
 }
