@@ -2,8 +2,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 #include "ngx_http_core_module.h"
-#include "llhttp/llhttp.h"
-#include "mybuf.h"
+#include "keepalive_tree.h"
 
 // #include <curl/curl.h>
 #include <assert.h>
@@ -34,32 +33,6 @@ typedef enum
 	CONN_DATA_FINISH_BODY,
 	CONN_DATA_FINISH_KEEPALIVE,
 } CONN_DATA_FINISH;
-
-typedef struct testcurl_conn_data_s
-{
-	struct testcurl_conn_data_s *next;
-
-	ngx_str_t           addr_name;
-	ngx_connection_t   *c;
-	ngx_http_request_t *request;
-
-	mybuf_t        send_buf;
-	u_char         pack_send_buf__[MYDEFAULT_BUF_SIZE];
-	mybuf_t        recv_buf;
-	u_char         pack_recv_buf__[MYDEFAULT_BUF_SIZE];
-	mybuf_t        body_buf;
-	u_char         pack_body_buf__[MYDEFAULT_BUF_SIZE];
-	int            finished;
-
-	llhttp_t          parser;
-	llhttp_settings_t settings;
-
-		//for keepalive
-	ngx_str_t                    host;
-	in_port_t                    port;
-
-	//没有timeout，只要对方不关闭就一直用
-} testcurl_conn_data;
 
 typedef struct
 {
