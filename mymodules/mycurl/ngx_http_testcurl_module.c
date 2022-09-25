@@ -7,6 +7,7 @@
 
 // #include <curl/curl.h>
 #include <assert.h>
+#include <stdbool.h>
 
 // request->c->data = conn_data;
 // conn_data->request_c = c;
@@ -570,6 +571,22 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 	return 0;
 }
 
+static bool check_all_conn_data_finished(ngx_http_request_t *r)
+{
+	testcurl_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_testcurl_module);
+	assert(ctx);
+
+	testcurl_conn_data *head = ctx->head;
+	while(head)
+	{
+		if (head->finished != CONN_DATA_FINISH_BODY)
+			return false;
+		head = head->next;
+	}
+
+	return true;
+}
+
 static void testcurl_send_resp(testcurl_conn_data *conn_data);
 static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 {
@@ -648,7 +665,9 @@ static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 		}
 		break;
 	}
-	if (conn_data->finished == CONN_DATA_FINISH_BODY)
+
+//	if (conn_data->finished == CONN_DATA_FINISH_BODY)
+	if (check_all_conn_data_finished(conn_data->request))
 	{
 		testcurl_send_resp(conn_data);
 		ngx_http_close_connection(c);
