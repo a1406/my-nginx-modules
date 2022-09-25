@@ -57,6 +57,7 @@ typedef struct testcurl_conn_data_s
 		//for keepalive
 	ngx_str_t host;
 	in_port_t port;
+		//没有timeout，只要对方不关闭就一直用
 } testcurl_conn_data;
 
 typedef struct
@@ -71,56 +72,23 @@ typedef struct
 } testcurl_cache_t;
 __attribute_maybe_unused__ static testcurl_cache_t keepalive_cache;
 
-__attribute_maybe_unused__ static int add_to_keepalive_cache(testcurl_conn_data *node)
-{
-	if (node->finished != CONN_DATA_FINISH_BODY)
-		return -1;
-
-	node->next = keepalive_cache.head;	
-		//todo addr_name
-	node->request = NULL;
-	ngx_memzero(&node->send_buf, (sizeof(mybuf_t) + MYDEFAULT_BUF_SIZE) * 3);
-	node->finished = CONN_DATA_FINISH_KEEPALIVE;
-	llhttp_reset(&node->parser);
-
-	keepalive_cache.head = node;
-	return (0);
-}
-__attribute_maybe_unused__ static testcurl_conn_data * get_from_keepalive_cache(ngx_str_t *addr, in_port_t port)
-{
-	testcurl_conn_data *head = keepalive_cache.head;
-	testcurl_conn_data *pre = NULL;
-	while (head)
-	{
-		if (head->port == port &&
-			head->host.len == addr->len &&
-			ngx_memcmp(head->host.data, addr->data, addr->len) == 0)
-		{
-			if (pre)
-				pre->next = head->next;
-			else
-				keepalive_cache.head = head->next;
-
-			head->next = NULL;
-			head->finished = CONN_DATA_FINISH_INIT;
-			return head;
-		}
-		pre = head;
-		head = head->next;
-	}
-	return (NULL);
-}
-
 static void generate_send_buf(testcurl_conn_data *conn_data);
 static int init_parse_http_resp(llhttp_t *parser, llhttp_settings_t *settings);
-__attribute_maybe_unused__ static testcurl_conn_data *add_conn_data(ngx_http_request_t *r, testcurl_ctx_t *ctx)
+__attribute_maybe_unused__ static testcurl_conn_data *add_conn_data(ngx_http_request_t *r, testcurl_ctx_t *ctx, testcurl_conn_data *cache_node)
 {
 	testcurl_conn_data **node = &ctx->head;
 	while (*node)
 	{
 		node = &((*node)->next);
 	}
-	*node = ngx_pcalloc(r->pool, sizeof(testcurl_conn_data));
+	// *node = ngx_pcalloc(r->pool, sizeof(testcurl_conn_data));
+	if (cache_node)
+		*node = cache_node;
+	else
+	{
+		*node = malloc(sizeof(testcurl_conn_data));
+		ngx_memzero(*node, sizeof(testcurl_conn_data));
+	}
 	(*node)->request = r;
 	r->main->count++;
 	(*node)->send_buf.size = MYDEFAULT_BUF_SIZE;
@@ -320,7 +288,7 @@ static ngx_int_t ngx_http_testcurl_init(ngx_conf_t *cf)
 	return NGX_OK;
 }
 
-static ngx_int_t ngx_http_testcurl_connect(ngx_http_request_t *r, testcurl_conn_data *conn_data)
+static ngx_int_t ngx_http_testcurl_connect(ngx_http_request_t *r, testcurl_conn_data *conn_data, ngx_url_t *u)
 {
 	int               rc, type, value;
 	ngx_socket_t      s;
@@ -333,30 +301,30 @@ static ngx_int_t ngx_http_testcurl_connect(ngx_http_request_t *r, testcurl_conn_
 	UNUSED(value);
 
 	ngx_log_t *log = r->connection->log;
-	ngx_url_t u;
-	{
-		ngx_memzero(&u, sizeof(ngx_url_t));
-		// ngx_str_set(&u.url, "127.0.0.1:8011");
-		u.url.len      = conn_data->addr_name.len;
-		u.url.data     = conn_data->addr_name.data;
-		// u.listen       = 1;
-		u.uri_part = 1;
-		u.default_port = 80;
-		if (ngx_parse_url(r->pool, &u) != NGX_OK)
-		{
-			if (u.err)
-			{
-				ngx_log_error(NGX_LOG_EMERG, log, 0,
-				                   "%s in \"%V\" of the \"listen\" directive",
-				                   u.err, &u.url);
-			}
+	// ngx_url_t u;
+	// {
+	// 	ngx_memzero(&u, sizeof(ngx_url_t));
+	// 	// ngx_str_set(&u.url, "127.0.0.1:8011");
+	// 	u.url.len      = conn_data->addr_name.len;
+	// 	u.url.data     = conn_data->addr_name.data;
+	// 	// u.listen       = 1;
+	// 	u.uri_part = 1;
+	// 	u.default_port = 80;
+	// 	if (ngx_parse_url(r->pool, &u) != NGX_OK)
+	// 	{
+	// 		if (u.err)
+	// 		{
+	// 			ngx_log_error(NGX_LOG_EMERG, log, 0,
+	// 			                   "%s in \"%V\" of the \"listen\" directive",
+	// 			                   u.err, &u.url);
+	// 		}
 
-			return NGX_ERROR;
-		}
-	}
+	// 		return NGX_ERROR;
+	// 	}
+	// }
 
 	type = SOCK_STREAM;
-	s    = ngx_socket(u.family, type, 0);
+	s    = ngx_socket(u->family, type, 0);
 	ngx_log_debug2(NGX_LOG_DEBUG_EVENT, log, 0, "%s socket %d",
 	               (type == SOCK_STREAM) ? "stream" : "dgram", s);
     if (s == (ngx_socket_t) -1) {
@@ -417,9 +385,7 @@ static ngx_int_t ngx_http_testcurl_connect(ngx_http_request_t *r, testcurl_conn_
     ngx_log_debug3(NGX_LOG_DEBUG_EVENT, log, 0,
                    "connect to %V, fd:%d #%uA", &conn_data->addr_name, s, c->number);
 	
-	generate_send_buf(conn_data);
-
-    rc = connect(s, &u.sockaddr.sockaddr, u.socklen);
+    rc = connect(s, &u->sockaddr.sockaddr, u->socklen);
     // rc = connect(s, NULL, u.socklen);	
     if (rc == -1) {
         err = ngx_socket_errno;
@@ -571,6 +537,77 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 	return 0;
 }
 
+__attribute_maybe_unused__ static int add_to_keepalive_cache(ngx_http_request_t *r)
+{
+	int ret = 0;
+	testcurl_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_testcurl_module);
+	assert(ctx);
+
+	testcurl_conn_data *head = ctx->head;
+	while(head)
+	{
+		testcurl_conn_data *node = head;
+		head = head->next;
+		if (node->finished == CONN_DATA_FINISH_BODY)
+		{
+			++ret;
+			node->next = keepalive_cache.head;
+			// todo addr_name
+			node->request = NULL;
+			ngx_memzero(&node->send_buf, (sizeof(mybuf_t) + MYDEFAULT_BUF_SIZE) * 3);
+			node->finished = CONN_DATA_FINISH_KEEPALIVE;
+			llhttp_reset(&node->parser);
+
+			keepalive_cache.head = node;
+		}
+	}
+
+	return (ret);
+}
+__attribute_maybe_unused__ static void delete_from_keepalive_cache(testcurl_conn_data *node)
+{
+	testcurl_conn_data *head = keepalive_cache.head;
+	testcurl_conn_data *pre = NULL;
+	while (head)
+	{
+		if (head == node)
+		{
+			if (pre)
+				pre->next = head->next;
+			else
+				keepalive_cache.head = head->next;
+			free(node);
+			return;
+		}
+		pre = head;
+		head = head->next;
+	}
+}
+__attribute_maybe_unused__ static testcurl_conn_data * get_from_keepalive_cache(ngx_str_t *addr, in_port_t port)
+{
+	testcurl_conn_data *head = keepalive_cache.head;
+	testcurl_conn_data *pre = NULL;
+	while (head)
+	{
+		if (head->port == port &&
+			head->host.len == addr->len &&
+			ngx_memcmp(head->host.data, addr->data, addr->len) == 0)
+		{
+			if (pre)
+				pre->next = head->next;
+			else
+				keepalive_cache.head = head->next;
+
+			head->next = NULL;
+			head->finished = CONN_DATA_FINISH_INIT;
+			return head;
+		}
+		pre = head;
+		head = head->next;
+	}
+	return (NULL);
+}
+
 static bool check_all_conn_data_finished(ngx_http_request_t *r)
 {
 	testcurl_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_testcurl_module);
@@ -585,6 +622,18 @@ static bool check_all_conn_data_finished(ngx_http_request_t *r)
 	}
 
 	return true;
+}
+
+static int ngx_testcurl_empty_recv(testcurl_conn_data *conn_data)
+{
+	ngx_connection_t *c = conn_data->c;
+	u_char            buf[1024];
+	for (;;)
+	{
+		int n = c->recv(c, buf, 1024);
+		if (n <= 0)
+			return NGX_OK;
+	}
 }
 
 static void testcurl_send_resp(ngx_http_request_t *r);
@@ -648,6 +697,7 @@ static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 		{
 			printf("n == 0, close connection\n");
 			ngx_http_close_connection(c);
+			delete_from_keepalive_cache(conn_data);
 
 			// ngx_int_t event;
 			// if (ngx_event_flags & NGX_USE_CLEAR_EVENT)
@@ -670,7 +720,9 @@ static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 	if (check_all_conn_data_finished(conn_data->request))
 	{
 		testcurl_send_resp(conn_data->request);
-		ngx_http_close_connection(c);
+
+		add_to_keepalive_cache(conn_data->request);
+//		ngx_http_close_connection(c);
 	}
 	return 0;
 }
@@ -919,23 +971,81 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 
 	if (ev->write == 1)
 	{
+		if (conn_data->finished == CONN_DATA_FINISH_KEEPALIVE)
+			return;
 		ngx_testcurl_send(conn_data);
 	}
 	else
 	{
+		if (conn_data->finished == CONN_DATA_FINISH_KEEPALIVE)
+		{
+			ngx_testcurl_empty_recv(conn_data);
+			return;
+		}
 		ngx_testcurl_recv(conn_data);		
 	}
 }
 
 static ngx_int_t ngx_http_testcurl_uri(ngx_http_request_t *r, const char *uri)
 {
+	int urllen = strlen(uri);
+	ngx_url_t u;
+	{
+		ngx_memzero(&u, sizeof(ngx_url_t));
+		// ngx_str_set(&u.url, "127.0.0.1:8011");
+		u.url.len  = urllen;
+		u.url.data = (u_char *)uri;
+		// u.listen       = 1;
+		u.uri_part = 1;
+		u.default_port = 80;
+		if (ngx_parse_url(r->pool, &u) != NGX_OK)
+		{
+			if (u.err)
+			{
+				ngx_log_error(NGX_LOG_EMERG, r->connection->log, 0,
+				                   "%s in \"%V\" of the \"listen\" directive",
+				                   u.err, &u.url);
+			}
+
+			return NGX_ERROR;
+		}
+	}
+
+	testcurl_conn_data *cache_node = get_from_keepalive_cache(&u.host, u.port);
+	
 	testcurl_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_testcurl_module);	
-	testcurl_conn_data *conn_data = add_conn_data(r, ctx);
+	testcurl_conn_data *conn_data = add_conn_data(r, ctx, cache_node);
 	// ngx_str_set(&conn_data->addr_name, uri);
 	conn_data->addr_name.data = (u_char *)uri;
-	conn_data->addr_name.len = strlen(uri);
-	int rc = ngx_http_testcurl_connect(r, conn_data);
+	conn_data->addr_name.len = urllen;
+	conn_data->host.data = u.host.data;
+	conn_data->host.len = u.host.len;
+	conn_data->port = u.port;
+	
+	if (cache_node)
+	{
+		generate_send_buf(conn_data);
+		int event;
+		if (ngx_event_flags & NGX_USE_CLEAR_EVENT)
+		{
+			event = NGX_CLEAR_EVENT;
+		}
+		else
+		{
+			event = NGX_LEVEL_EVENT;
+		}
+	
+		ngx_event_t *wev = cache_node->c->write;
+		if (ngx_add_event(wev, NGX_WRITE_EVENT, event) != NGX_OK)
+		{
+			printf("use cache conn, add write event failed\n");
+			return NGX_ERROR;
+		}
+		return NGX_OK;
+	}
 
+	int rc = ngx_http_testcurl_connect(r, conn_data, &u);
+	generate_send_buf(conn_data);
 	ngx_connection_t *c;	
     c = conn_data->c;
 
