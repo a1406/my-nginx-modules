@@ -31,6 +31,8 @@ typedef struct testcurl_conn_data_s
 		//for keepalive
 	ngx_str_t                    host;
 	in_port_t                    port;
+    socklen_t                 socklen;
+    ngx_sockaddr_t            sockaddr;
 
 	//没有timeout，只要对方不关闭就一直用
 } testcurl_conn_data;
@@ -40,5 +42,12 @@ typedef struct  {
 	testcurl_conn_data data;
 } ngx_mycurl_keepalive_t;
 
+
+int ngx_keepalive_tree_init();
+ngx_int_t ngx_insert_mycurl_keepalive(testcurl_conn_data *data);
+void ngx_delete_mycurl_keepalive(testcurl_conn_data *data);
+testcurl_conn_data *ngx_lookup_mycurl_keepalive(struct sockaddr *sockaddr, socklen_t socklen);
+
+int ngx_keepalive_tree_ut();
 
 #endif /* KEEPALIVE_TREE_H */

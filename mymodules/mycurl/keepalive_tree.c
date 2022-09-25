@@ -1,22 +1,39 @@
 #include "keepalive_tree.h"
 #include "ngx_core.h"
 
+#include <stddef.h>
+#include <assert.h>
 #define UNUSED(x) (void)(x)
 
-static ngx_rbtree_t      rbtree;
-static ngx_rbtree_node_t sentinel;
+#define container_of(ptr, type, member) ({ \
+                const typeof( ((type *)0)->member ) *__mptr = (ptr); \
+                (type *)( (char *)__mptr - offsetof(type,member) );})
 
+static ngx_rbtree_t rbtree;
+ngx_rbtree_node_t   sentinel;
+
+static void
+ngx_mycurl_keepalive_insert_value(ngx_rbtree_node_t *temp,
+    ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel);
+
+int ngx_keepalive_tree_init()
+{
+	ngx_rbtree_init(&rbtree, &sentinel, ngx_mycurl_keepalive_insert_value);
+	return 0;
+}
 
 static ngx_int_t cmp_conn_data(testcurl_conn_data *a, testcurl_conn_data *b)
 {
-	if (a->port == b->port &&
-	    a->host.len == b->host.len &&
-	    ngx_memcmp(a->host.data, b->host.data, a->host.len) == 0)
-		return NGX_OK;
-	return NGX_DECLINED;
+	// if (a->port == b->port &&
+	//     a->host.len == b->host.len &&
+	//     ngx_memcmp(a->host.data, b->host.data, a->host.len) == 0)
+	// 	return NGX_OK;
+
+	return ngx_cmp_sockaddr(&a->sockaddr.sockaddr, a->socklen,
+	                        &b->sockaddr.sockaddr, b->socklen, 1);
 }
 
-void
+static void
 ngx_mycurl_keepalive_insert_value(ngx_rbtree_node_t *temp,
     ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel)
 {
@@ -72,102 +89,48 @@ ngx_mycurl_keepalive_insert_value(ngx_rbtree_node_t *temp,
     ngx_rbt_red(node);
 }
 
-#if 0
-static ngx_int_t
+
+__attribute_maybe_unused__ ngx_int_t
 ngx_insert_mycurl_keepalive(testcurl_conn_data *data)
 {
     uint32_t               hash;
-    ngx_pool_cleanup_t    *cln;
-    ngx_udp_connection_t  *udp;
 
-    if (c->udp) {
-        return NGX_OK;
-    }
-
-    udp = ngx_pcalloc(c->pool, sizeof(ngx_udp_connection_t));
-    if (udp == NULL) {
-        return NGX_ERROR;
-    }
-
-    udp->connection = c;
+	ngx_mycurl_keepalive_t *node = container_of(data, ngx_mycurl_keepalive_t, data);
 
     ngx_crc32_init(hash);
-    ngx_crc32_update(&hash, (u_char *) c->sockaddr, c->socklen);
-
-    if (c->listening->wildcard) {
-        ngx_crc32_update(&hash, (u_char *) c->local_sockaddr, c->local_socklen);
-    }
+    ngx_crc32_update(&hash, (u_char *) &data->sockaddr, data->socklen);
 
     ngx_crc32_final(hash);
 
-    udp->node.key = hash;
+    node->node.key = hash;
 
-    cln = ngx_pool_cleanup_add(c->pool, 0);
-    if (cln == NULL) {
-        return NGX_ERROR;
-    }
-
-    cln->data = c;
-    cln->handler = ngx_delete_udp_connection;
-
-    ngx_rbtree_insert(&c->listening->rbtree, &udp->node);
-
-    c->udp = udp;
+    ngx_rbtree_insert(&rbtree, &node->node);
 
     return NGX_OK;
 }
 
 
-void
-ngx_delete_udp_connection(void *data)
+__attribute_maybe_unused__ void ngx_delete_mycurl_keepalive(testcurl_conn_data *data)
 {
-    ngx_connection_t  *c = data;
-
-    if (c->udp == NULL) {
-        return;
-    }
-
-    ngx_rbtree_delete(&c->listening->rbtree, &c->udp->node);
-
-    c->udp = NULL;
+	ngx_mycurl_keepalive_t *node = container_of(data, ngx_mycurl_keepalive_t, data);	
+    ngx_rbtree_delete(&rbtree, &node->node);
 }
 
 
-static ngx_connection_t *
-ngx_lookup_udp_connection(ngx_listening_t *ls, struct sockaddr *sockaddr,
-    socklen_t socklen, struct sockaddr *local_sockaddr, socklen_t local_socklen)
+__attribute_maybe_unused__ testcurl_conn_data *
+    ngx_lookup_mycurl_keepalive(struct sockaddr *sockaddr, socklen_t socklen)
 {
-    uint32_t               hash;
+	uint32_t               hash;
     ngx_int_t              rc;
-    ngx_connection_t      *c;
     ngx_rbtree_node_t     *node, *sentinel;
-    ngx_udp_connection_t  *udp;
 
-#if (NGX_HAVE_UNIX_DOMAIN)
+	ngx_mycurl_keepalive_t *udp;
 
-    if (sockaddr->sa_family == AF_UNIX) {
-        struct sockaddr_un *saun = (struct sockaddr_un *) sockaddr;
-
-        if (socklen <= (socklen_t) offsetof(struct sockaddr_un, sun_path)
-            || saun->sun_path[0] == '\0')
-        {
-            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ngx_cycle->log, 0,
-                           "unbound unix socket");
-            return NULL;
-        }
-    }
-
-#endif
-
-    node = ls->rbtree.root;
-    sentinel = ls->rbtree.sentinel;
+    node = rbtree.root;
+    sentinel = rbtree.sentinel;
 
     ngx_crc32_init(hash);
     ngx_crc32_update(&hash, (u_char *) sockaddr, socklen);
-
-    if (ls->wildcard) {
-        ngx_crc32_update(&hash, (u_char *) local_sockaddr, local_socklen);
-    }
 
     ngx_crc32_final(hash);
 
@@ -185,20 +148,13 @@ ngx_lookup_udp_connection(ngx_listening_t *ls, struct sockaddr *sockaddr,
 
         /* hash == node->key */
 
-        udp = (ngx_udp_connection_t *) node;
-
-        c = udp->connection;
+        udp = (ngx_mycurl_keepalive_t *) node;
 
         rc = ngx_cmp_sockaddr(sockaddr, socklen,
-                              c->sockaddr, c->socklen, 1);
-
-        if (rc == 0 && ls->wildcard) {
-            rc = ngx_cmp_sockaddr(local_sockaddr, local_socklen,
-                                  c->local_sockaddr, c->local_socklen, 1);
-        }
+                              &udp->data.sockaddr.sockaddr, udp->data.socklen, 1);
 
         if (rc == 0) {
-            return c;
+            return &udp->data;
         }
 
         node = (rc < 0) ? node->left : node->right;
@@ -206,4 +162,107 @@ ngx_lookup_udp_connection(ngx_listening_t *ls, struct sockaddr *sockaddr,
 
     return NULL;
 }
-#endif
+
+int ngx_keepalive_tree_ut()
+{
+	static char *test_init_uri[] = {
+		"127.0.0.1:9090/lua_test4?a=111&b=22",
+		"127.0.0.1:9091/lua_test4?a=111&b=22",
+		"127.0.0.2:9090/lua_test4?a=111&b=22",
+		"127.0.0.3:9090/lua_test4?a=111&b=22",
+		"12.0.0.1:9090/lua_test4?a=111&b=22",
+		"27.0.0.1:9090/lua_test4?a=111&b=22",
+		"127.4.0.1:9090/lua_test4?a=111&b=22",
+		"127.14.0.1:9090/lua_test4?a=111&b=22",
+		"127.4.20.1:9090/lua_test4?a=111&b=22",
+		"27.4.0.1:9090/lua_test4?a=111&b=22",
+		"173.4.0.1:9090/lua_test4?a=111&b=22",
+		"19.34.20.1:9090/lua_test4?a=111&b=22",
+	};
+
+	static char *test_find_uri[] = {
+		"133.0.0.1:9090/lua_test4?a=111&b=22",
+		"127.0.0.5:9091/lua_test4?a=111&b=22",
+		"127.1.1.2:9090/lua_test4?a=111&b=22",
+		"127.0.0.33:9090/lua_test4?a=111&b=22",
+		"112.0.0.1:9090/lua_test4?a=111&b=22",
+		"27.30.0.1:9090/lua_test4?a=111&b=22",
+		"127.14.10.1:9090/lua_test4?a=111&b=22",
+		"127.14.0.11:9090/lua_test4?a=111&b=22",
+		"17.4.20.1:9090/lua_test4?a=111&b=22",
+		"17.4.10.1:9090/lua_test4?a=111&b=22",
+		"173.4.10.11:9090/lua_test4?a=111&b=22",
+		"19.34.20.1:9080/lua_test4?a=111&b=22",
+	};
+	static ngx_mycurl_keepalive_t **test_node;
+	
+    ngx_log_t *log = ngx_log_init(NULL, NULL);		
+	ngx_pool_t *pool = ngx_create_pool(128, log);	
+	ngx_url_t u;
+
+	size_t num = sizeof(test_init_uri) / sizeof(test_init_uri[0]);
+	test_node = ngx_pcalloc(pool, sizeof(void *) * num);
+
+	for (size_t i = 0; i < num; ++i)
+	{
+		ngx_memzero(&u, sizeof(ngx_url_t));
+		u.url.len  = strlen(test_init_uri[i]);
+		u.url.data = (u_char *)test_init_uri[i];
+		u.uri_part = 1;
+		u.default_port = 80;
+		ngx_parse_url(pool, &u);
+
+		test_node[i] = ngx_pcalloc(pool, sizeof(ngx_mycurl_keepalive_t));
+		testcurl_conn_data *data = &test_node[i]->data;
+		memcpy(&data->sockaddr, &u.sockaddr, sizeof(u.sockaddr));
+		data->socklen = u.socklen;
+
+		ngx_insert_mycurl_keepalive(data);
+	}
+
+	for (size_t i = 0; i < num; ++i)
+	{
+		ngx_memzero(&u, sizeof(ngx_url_t));
+		u.url.len  = strlen(test_init_uri[i]);
+		u.url.data = (u_char *)test_init_uri[i];
+		u.uri_part = 1;
+		u.default_port = 80;
+		ngx_parse_url(pool, &u);
+
+		testcurl_conn_data *data = ngx_lookup_mycurl_keepalive(&u.sockaddr.sockaddr,
+			u.socklen);
+		assert(data == &test_node[i]->data);
+	}	
+	for (size_t i = 0; i < num; ++i)
+	{
+		ngx_memzero(&u, sizeof(ngx_url_t));
+		u.url.len  = strlen(test_find_uri[i]);
+		u.url.data = (u_char *)test_find_uri[i];
+		u.uri_part = 1;
+		u.default_port = 80;
+		ngx_parse_url(pool, &u);
+
+		testcurl_conn_data *data = ngx_lookup_mycurl_keepalive(&u.sockaddr.sockaddr,
+			u.socklen);
+		assert(data == NULL);
+	}	
+
+	for (size_t i = 0; i < num; ++i)
+	{
+		ngx_memzero(&u, sizeof(ngx_url_t));
+		u.url.len  = strlen(test_init_uri[i]);
+		u.url.data = (u_char *)test_init_uri[i];
+		u.uri_part = 1;
+		u.default_port = 80;
+		ngx_parse_url(pool, &u);
+
+		ngx_delete_mycurl_keepalive(&test_node[i]->data);
+		
+		testcurl_conn_data *data = ngx_lookup_mycurl_keepalive(&u.sockaddr.sockaddr,
+			u.socklen);
+		assert(data == NULL);
+	}	
+	
+	ngx_destroy_pool(pool);
+	return 0;	
+}

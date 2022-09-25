@@ -215,6 +215,8 @@ ngx_int_t init_testcurl_process(ngx_cycle_t *cycle)
 	// curl_multi_setopt(g.multi, CURLMOPT_TIMERFUNCTION, multi_timer_cb);
 	// curl_multi_setopt(g.multi, CURLMOPT_TIMERDATA, &g);
 
+	ngx_keepalive_tree_init();
+	ngx_keepalive_tree_ut();
 	return NGX_OK;	
 }
 
