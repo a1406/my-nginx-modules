@@ -42,9 +42,12 @@ typedef struct testcurl_conn_data_s
 	ngx_connection_t   *c;
 	ngx_http_request_t *request;
 
-	mydefaultbuf_t send_buf;
-	mydefaultbuf_t recv_buf;
-	mydefaultbuf_t body_buf;
+	mybuf_t        send_buf;
+	u_char         pack_send_buf__[MYDEFAULT_BUF_SIZE];
+	mybuf_t        recv_buf;
+	u_char         pack_recv_buf__[MYDEFAULT_BUF_SIZE];
+	mybuf_t        body_buf;
+	u_char         pack_body_buf__[MYDEFAULT_BUF_SIZE];
 	int            finished;
 
 	llhttp_t          parser;
@@ -75,9 +78,7 @@ __attribute_maybe_unused__ static int add_to_keepalive_cache(testcurl_conn_data 
 	node->next = keepalive_cache.head;	
 		//todo addr_name
 	node->request = NULL;
-	memset(&node->send_buf, 0, sizeof(mydefaultbuf_t));
-	memset(&node->recv_buf, 0, sizeof(mydefaultbuf_t));
-	memset(&node->body_buf, 0, sizeof(mydefaultbuf_t));	
+	memset(&node->send_buf, 0, (sizeof(mybuf_t) + MYDEFAULT_BUF_SIZE) * 3);
 	node->finished = CONN_DATA_FINISH_KEEPALIVE;
 	llhttp_reset(&node->parser);
 

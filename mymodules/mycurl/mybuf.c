@@ -40,7 +40,7 @@ void my_append_str(ngx_pool_t *pool, const ngx_str_t *str, mybuf_t *mybuf)
 	return;
 }
 
-mybuf_t *get_recv_buf(ngx_pool_t *pool, mydefaultbuf_t *head, u_char **p, int *len)
+mybuf_t *get_recv_buf(ngx_pool_t *pool, mybuf_t *head, u_char **p, int *len)
 {
 	mybuf_t *ret = (mybuf_t *)head;
 	while (mybuf_empty(ret) && ret->next)
