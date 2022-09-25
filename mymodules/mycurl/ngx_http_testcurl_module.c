@@ -570,6 +570,92 @@ static int ngx_testcurl_send(testcurl_conn_data *conn_data)//ngx_connection_t *c
 	return 0;
 }
 
+static void testcurl_send_resp(testcurl_conn_data *conn_data);
+static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
+{
+	ngx_connection_t *c = conn_data->c;
+	for (;;)
+	{
+		u_char  *p;
+		int      len;
+		mybuf_t *buf = get_recv_buf(conn_data->c->pool, &conn_data->recv_buf, &p, &len);
+		int      n   = c->recv(c, p, len);
+		if (n > 0)
+		{
+			llhttp_t         *parser = &conn_data->parser;
+			enum llhttp_errno err    = llhttp_execute(parser, (char *)p, n);
+			if (err == HPE_OK)
+			{
+				/* Successfully parsed! */
+				int ret = llhttp_message_needs_eof(parser);
+				UNUSED(ret);
+				llhttp_errno_t ret2 = llhttp_finish(parser);
+				UNUSED(ret2);
+				const char *errmsg = llhttp_errno_name(ret2);
+				if (ret2 != HPE_INVALID_EOF_STATE && ret2 != HPE_OK)
+				{
+					printf("http finish: %s\n", errmsg);
+					// c->error = 1;
+					// return;
+				}
+			}
+			else
+			{
+				fprintf(stderr, "Parse error: %s %s\n", llhttp_errno_name(err),
+				        parser->reason);
+				c->error = 1;
+				return 0;
+			}
+			buf->used += n;
+			continue;
+		}
+		if (n == NGX_AGAIN)
+		{
+			if (ngx_handle_read_event(c->read, 0) != NGX_OK)
+			{
+				// TODO:
+				printf("handle read event failed\n");
+				c->error = 1;
+				return 0;
+			}
+			break;
+		}
+		if (n == NGX_ERROR)
+		{
+			// TODO:
+			printf("n == NGX_ERROR\n");
+			c->error = 1;
+			return 0;
+		}
+		if (n == 0)
+		{
+			printf("n == 0, close connection\n");
+			ngx_http_close_connection(c);
+
+			// ngx_int_t event;
+			// if (ngx_event_flags & NGX_USE_CLEAR_EVENT)
+			// {
+			// 	/* kqueue */
+			// 	event = NGX_CLEAR_EVENT;
+			// }
+			// else
+			// {
+			// 	/* select, poll, /dev/poll */
+			// 	event = NGX_LEVEL_EVENT;
+			// }
+			// ngx_del_event(
+			return 0;
+		}
+		break;
+	}
+	if (conn_data->finished == CONN_DATA_FINISH_BODY)
+	{
+		testcurl_send_resp(conn_data);
+		ngx_http_close_connection(c);
+	}
+	return 0;
+}
+
 static int handle_on_headers_complete(llhttp_t* llhttp)
 {
 	// printf("head complete\n");
@@ -796,86 +882,7 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 	}
 	else
 	{
-		for (;;)
-		{
-			u_char *p;
-			int len;
-			mybuf_t *buf = get_recv_buf(conn_data->c->pool, &conn_data->recv_buf, &p, &len);
-			int n = c->recv(c, p, len);
-			if (n > 0)
-			{
-				llhttp_t *parser = &conn_data->parser;
-				enum llhttp_errno err = llhttp_execute(parser, (char *)p, n);
-				if (err == HPE_OK)
-				{
-					/* Successfully parsed! */
-					int ret = llhttp_message_needs_eof(parser);
-					UNUSED(ret);
-					llhttp_errno_t ret2 = llhttp_finish(parser);
-					UNUSED(ret2);
-					const char *errmsg = llhttp_errno_name(ret2);
-					if (ret2 != HPE_INVALID_EOF_STATE
-						&& ret2 != HPE_OK)
-					{
-						printf("http finish: %s\n", errmsg);
-						// c->error = 1;
-						// return;
-					}
-				}
-				else
-				{
-					fprintf(stderr, "Parse error: %s %s\n", llhttp_errno_name(err),
-					        parser->reason);
-					c->error = 1;
-					return;
-				}
-				buf->used += n;
-				continue;
-			}
-			if (n == NGX_AGAIN)
-			{
-				if (ngx_handle_read_event(c->read, 0) != NGX_OK)
-				{
-					// TODO:
-					printf("handle read event failed\n");
-					c->error = 1;
-					return;
-				}
-				break;
-			}
-			if (n == NGX_ERROR)
-			{
-				// TODO:
-				printf("n == NGX_ERROR\n");
-				c->error = 1;
-				return;
-			}
-			if (n == 0)
-			{
-				printf("n == 0, close connection\n");
-				ngx_http_close_connection(c);
-				
-				// ngx_int_t event;
-				// if (ngx_event_flags & NGX_USE_CLEAR_EVENT)
-				// {
-				// 	/* kqueue */
-				// 	event = NGX_CLEAR_EVENT;
-				// }
-				// else
-				// {
-				// 	/* select, poll, /dev/poll */
-				// 	event = NGX_LEVEL_EVENT;
-				// }
-				// ngx_del_event(
-				return;
-			}
-			break;
-		}
-		if (conn_data->finished == CONN_DATA_FINISH_BODY)
-		{
-			testcurl_send_resp(conn_data);
-			ngx_http_close_connection(c);
-		}
+		ngx_testcurl_recv(conn_data);		
 	}
 }
 
@@ -899,8 +906,7 @@ static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
 	// ngx_event_connect_peer(ngx_peer_connection_t *pc)	;
 
 	testcurl_conn_data *conn_data = add_conn_data(r, ctx);
-	// ngx_str_set(&conn_data->addr_name, "127.0.0.1:9090/lua_test4?a=111&b=22");
-	ngx_str_set(&conn_data->addr_name, "baidu.com:9090/lua_test4?a=111&b=22");	
+	ngx_str_set(&conn_data->addr_name, "127.0.0.1:9090/lua_test4?a=111&b=22");
 	int rc = ngx_http_testcurl_connect(r, conn_data);
 
 	ngx_connection_t *c;	
