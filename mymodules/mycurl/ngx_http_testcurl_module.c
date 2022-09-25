@@ -576,7 +576,6 @@ __attribute_maybe_unused__ static void delete_from_keepalive_cache(testcurl_conn
 				pre->next = head->next;
 			else
 				keepalive_cache.head = head->next;
-			free(node);
 			return;
 		}
 		pre = head;
@@ -608,6 +607,28 @@ __attribute_maybe_unused__ static testcurl_conn_data * get_from_keepalive_cache(
 	return (NULL);
 }
 
+static void delete_from_ctx(testcurl_conn_data *data)
+{
+	ngx_http_request_t *r = data->request;	
+	testcurl_conn_data *pre = NULL;	
+	testcurl_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_testcurl_module);
+	assert(ctx);
+
+	testcurl_conn_data *head = ctx->head;
+	while(head)
+	{
+		if (head == data)
+		{
+			if (pre)
+				pre->next = head->next;
+			else
+			    ctx->head = head->next;
+			return;
+		}
+		head = head->next;
+	}
+}
+
 static bool check_all_conn_data_finished(ngx_http_request_t *r)
 {
 	testcurl_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_testcurl_module);
@@ -635,7 +656,11 @@ static int ngx_testcurl_empty_recv(testcurl_conn_data *conn_data)
 		{
 			printf("n == 0, close connection\n");
 			ngx_http_close_connection(c);
-			delete_from_keepalive_cache(conn_data);
+			if (conn_data->finished == CONN_DATA_FINISH_KEEPALIVE)
+				delete_from_keepalive_cache(conn_data);
+			else
+				delete_from_ctx(conn_data);
+			free(conn_data);
 			return NGX_OK;			
 		}
 		if (n < 0)
@@ -704,7 +729,11 @@ static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 		{
 			printf("n == 0, close connection\n");
 			ngx_http_close_connection(c);
-			delete_from_keepalive_cache(conn_data);
+			if (conn_data->finished == CONN_DATA_FINISH_KEEPALIVE)
+				delete_from_keepalive_cache(conn_data);
+			else
+				delete_from_ctx(conn_data);
+			free(conn_data);
 
 			// ngx_int_t event;
 			// if (ngx_event_flags & NGX_USE_CLEAR_EVENT)
@@ -718,7 +747,6 @@ static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 			// 	event = NGX_LEVEL_EVENT;
 			// }
 			// ngx_del_event(
-			return 0;
 		}
 		break;
 	}
