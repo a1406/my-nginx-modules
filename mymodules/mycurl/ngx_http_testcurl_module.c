@@ -37,7 +37,7 @@ typedef enum
 
 typedef struct testcurl_conn_data_s
 {
-	struct testcurl_conn_data_s *next;
+	struct testcurl_conn_data_s *ctx_next;
 
 	ngx_str_t           addr_name;
 	ngx_connection_t   *c;
@@ -55,9 +55,11 @@ typedef struct testcurl_conn_data_s
 	llhttp_settings_t settings;
 
 		//for keepalive
-	ngx_str_t host;
-	in_port_t port;
-		//没有timeout，只要对方不关闭就一直用
+	ngx_str_t                    host;
+	in_port_t                    port;
+	struct testcurl_conn_data_s *cache_next;
+
+	//没有timeout，只要对方不关闭就一直用
 } testcurl_conn_data;
 
 typedef struct
@@ -79,7 +81,7 @@ __attribute_maybe_unused__ static testcurl_conn_data *add_conn_data(ngx_http_req
 	testcurl_conn_data **node = &ctx->head;
 	while (*node)
 	{
-		node = &((*node)->next);
+		node = &((*node)->ctx_next);
 	}
 	// *node = ngx_pcalloc(r->pool, sizeof(testcurl_conn_data));
 	if (cache_node)
@@ -547,11 +549,11 @@ __attribute_maybe_unused__ static int add_to_keepalive_cache(ngx_http_request_t 
 	while(head)
 	{
 		testcurl_conn_data *node = head;
-		head = head->next;
+		head = head->ctx_next;
 		if (node->finished == CONN_DATA_FINISH_BODY)
 		{
 			++ret;
-			node->next = keepalive_cache.head;
+			node->cache_next = keepalive_cache.head;
 			// todo addr_name
 			node->request = NULL;
 			ngx_memzero(&node->send_buf, (sizeof(mybuf_t) + MYDEFAULT_BUF_SIZE) * 3);
@@ -573,13 +575,13 @@ __attribute_maybe_unused__ static void delete_from_keepalive_cache(testcurl_conn
 		if (head == node)
 		{
 			if (pre)
-				pre->next = head->next;
+				pre->cache_next = head->cache_next;
 			else
-				keepalive_cache.head = head->next;
+				keepalive_cache.head = head->cache_next;
 			return;
 		}
 		pre = head;
-		head = head->next;
+		head = head->cache_next;
 	}
 }
 __attribute_maybe_unused__ static testcurl_conn_data * get_from_keepalive_cache(ngx_str_t *addr, in_port_t port)
@@ -593,16 +595,17 @@ __attribute_maybe_unused__ static testcurl_conn_data * get_from_keepalive_cache(
 			ngx_memcmp(head->host.data, addr->data, addr->len) == 0)
 		{
 			if (pre)
-				pre->next = head->next;
+				pre->cache_next = head->cache_next;
 			else
-				keepalive_cache.head = head->next;
+				keepalive_cache.head = head->cache_next;
 
-			head->next = NULL;
+			head->cache_next = NULL;
+			head->ctx_next = NULL;
 			head->finished = CONN_DATA_FINISH_INIT;
 			return head;
 		}
 		pre = head;
-		head = head->next;
+		head = head->cache_next;
 	}
 	return (NULL);
 }
@@ -620,12 +623,13 @@ static void delete_from_ctx(testcurl_conn_data *data)
 		if (head == data)
 		{
 			if (pre)
-				pre->next = head->next;
+				pre->ctx_next = head->ctx_next;
 			else
-			    ctx->head = head->next;
+			    ctx->head = head->ctx_next;
 			return;
 		}
-		head = head->next;
+		pre = head;
+		head = head->ctx_next;
 	}
 }
 
@@ -639,7 +643,7 @@ static bool check_all_conn_data_finished(ngx_http_request_t *r)
 	{
 		if (head->finished != CONN_DATA_FINISH_BODY)
 			return false;
-		head = head->next;
+		head = head->ctx_next;
 	}
 
 	return true;
@@ -654,7 +658,7 @@ static int ngx_testcurl_empty_recv(testcurl_conn_data *conn_data)
 		int n = c->recv(c, buf, 1024);
 		if (n == 0)
 		{
-			printf("n == 0, close connection\n");
+			printf("%d: n == 0, close connection, conn_data->finished = %d, conn_data = %p\n", __LINE__, conn_data->finished, conn_data);
 			ngx_http_close_connection(c);
 			if (conn_data->finished == CONN_DATA_FINISH_KEEPALIVE)
 				delete_from_keepalive_cache(conn_data);
@@ -672,6 +676,7 @@ static void testcurl_send_resp(ngx_http_request_t *r);
 static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 {
 	ngx_connection_t *c = conn_data->c;
+	ngx_http_request_t *r = conn_data->request;
 	for (;;)
 	{
 		u_char  *p;
@@ -727,7 +732,7 @@ static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 		}
 		if (n == 0)
 		{
-			printf("n == 0, close connection\n");
+			printf("%d: n == 0, close connection, conn_data->finished = %d, conn_data = %p\n", __LINE__, conn_data->finished, conn_data);
 			ngx_http_close_connection(c);
 			if (conn_data->finished == CONN_DATA_FINISH_KEEPALIVE)
 				delete_from_keepalive_cache(conn_data);
@@ -752,12 +757,12 @@ static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 	}
 
 //	if (conn_data->finished == CONN_DATA_FINISH_BODY)
-	if (check_all_conn_data_finished(conn_data->request))
+	if (check_all_conn_data_finished(r))
 	{
-		testcurl_send_resp(conn_data->request);
-
-		add_to_keepalive_cache(conn_data->request);
-//		ngx_http_close_connection(c);
+		testcurl_send_resp(r);
+		add_to_keepalive_cache(r);
+		ngx_http_finalize_request(r, NGX_OK);
+		//		ngx_http_close_connection(c);
 	}
 	return 0;
 }
@@ -948,7 +953,7 @@ static void testcurl_send_resp(ngx_http_request_t *r)
 	{
 		size_t body_len = get_buf_len(&head->body_buf);
 		retsize += body_len;
-		head = head->next;
+		head = head->ctx_next;
 	}
 	char *retvalue = ngx_pcalloc(r->pool, retsize);
 	
@@ -959,7 +964,7 @@ static void testcurl_send_resp(ngx_http_request_t *r)
 		int ret = get_buf_data(&head->body_buf, &retvalue[i]);
 		assert(ret >= 0);
 		i += ret;
-		head = head->next;
+		head = head->ctx_next;
 	}
 
 	// size_t body_len = get_buf_len(&head->body_buf);
@@ -995,7 +1000,6 @@ static void testcurl_send_resp(ngx_http_request_t *r)
 	ngx_http_send_response(r, NGX_HTTP_OK, NULL, &cv);
 	// int ret2 = ngx_http_send_special(r, NGX_HTTP_LAST);
 	// printf("send http resp, sendheadret = %d, ret = %d, %d\n", sendheadret, ret, ret2);
-	ngx_http_finalize_request(r, NGX_OK);
 }
 
 static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
