@@ -79,7 +79,7 @@ __attribute_maybe_unused__ static int add_to_keepalive_cache(testcurl_conn_data 
 	node->next = keepalive_cache.head;	
 		//todo addr_name
 	node->request = NULL;
-	memset(&node->send_buf, 0, (sizeof(mybuf_t) + MYDEFAULT_BUF_SIZE) * 3);
+	ngx_memzero(&node->send_buf, (sizeof(mybuf_t) + MYDEFAULT_BUF_SIZE) * 3);
 	node->finished = CONN_DATA_FINISH_KEEPALIVE;
 	llhttp_reset(&node->parser);
 
@@ -587,7 +587,7 @@ static bool check_all_conn_data_finished(ngx_http_request_t *r)
 	return true;
 }
 
-static void testcurl_send_resp(testcurl_conn_data *conn_data);
+static void testcurl_send_resp(ngx_http_request_t *r);
 static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 {
 	ngx_connection_t *c = conn_data->c;
@@ -669,7 +669,7 @@ static int ngx_testcurl_recv(testcurl_conn_data *conn_data)
 //	if (conn_data->finished == CONN_DATA_FINISH_BODY)
 	if (check_all_conn_data_finished(conn_data->request))
 	{
-		testcurl_send_resp(conn_data);
+		testcurl_send_resp(conn_data->request);
 		ngx_http_close_connection(c);
 	}
 	return 0;
@@ -848,16 +848,39 @@ __attribute_maybe_unused__ static void generate_send_buf(testcurl_conn_data *con
 	}
 }
 
-static void testcurl_send_resp(testcurl_conn_data *conn_data)
+static void testcurl_send_resp(ngx_http_request_t *r)
 {
-	ngx_http_request_t *r = conn_data->request;	
 	ngx_http_complex_value_t cv;
 	ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
-	size_t body_len = get_buf_len(BODY_BUF);
-	size_t retsize  = body_len + sizeof(APPEND_STR) - 1;
-	char  *retvalue = ngx_pcalloc(r->pool, retsize);
-	get_buf_data(BODY_BUF, retvalue);
-	memcpy(&retvalue[body_len], APPEND_STR, sizeof(APPEND_STR) - 1);
+
+	testcurl_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_testcurl_module);
+	assert(ctx);
+	size_t retsize = sizeof(APPEND_STR) - 1;
+	testcurl_conn_data *head = ctx->head;
+	while (head)
+	{
+		size_t body_len = get_buf_len(&head->body_buf);
+		retsize += body_len;
+		head = head->next;
+	}
+	char *retvalue = ngx_pcalloc(r->pool, retsize);
+	
+	int i = 0;
+	head = ctx->head;
+	while (head)
+	{
+		int ret = get_buf_data(&head->body_buf, &retvalue[i]);
+		assert(ret >= 0);
+		i += ret;
+		head = head->next;
+	}
+
+	// size_t body_len = get_buf_len(&head->body_buf);
+	// size_t retsize  = body_len + sizeof(APPEND_STR) - 1;
+	// char  *retvalue = ngx_pcalloc(r->pool, retsize);
+	// get_buf_data(&head->body_buf, retvalue);
+	
+	memcpy(&retvalue[i], APPEND_STR, sizeof(APPEND_STR) - 1);
 	// u_char retvalue[] = "return from test curl\r\n";
 	cv.value.len  = retsize;
 	cv.value.data = (u_char *)retvalue;
@@ -865,21 +888,20 @@ static void testcurl_send_resp(testcurl_conn_data *conn_data)
 	// int sendheadret = 0;
 	// sendheadret = send_header_if_needed(r);
 
+
+	if (r->headers_out.status == 0)
 	{
-		if (r->headers_out.status == 0)
-		{
-			r->headers_out.status = NGX_HTTP_OK;
-		}
-
-		if (ngx_http_set_content_type(r) != NGX_OK)
-		{
-			// return NGX_ERROR;
-			printf("set content type failed\n");
-		}
-
-		ngx_http_clear_content_length(r);
-		ngx_http_clear_accept_ranges(r);
+		r->headers_out.status = NGX_HTTP_OK;
 	}
+
+	if (ngx_http_set_content_type(r) != NGX_OK)
+	{
+		// return NGX_ERROR;
+		printf("set content type failed\n");
+	}
+
+	ngx_http_clear_content_length(r);
+	ngx_http_clear_accept_ranges(r);
 
 	r->connection->data = r;
 	// int ret = 0, ret2 = 0;
@@ -905,27 +927,13 @@ static void ngx_testcurl_rwevent_handler(ngx_event_t *ev)
 	}
 }
 
-static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
+static ngx_int_t ngx_http_testcurl_uri(ngx_http_request_t *r, const char *uri)
 {
-	ngx_http_use_testcurl_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_testcurl_module);
-	if (conf->use_testcurl != 1) {
-		return NGX_OK;
-	}
-
-	testcurl_ctx_t *ctx = ngx_pcalloc(r->pool, sizeof(testcurl_ctx_t));
-	if (ctx == NULL)
-	{
-		return NGX_ERROR;
-	}
-	ngx_http_set_ctx(r, ctx, ngx_http_testcurl_module);
-
-	// ngx_parse_url    //域名解析
-    // u->peer.log = r->connection->log;
-    // u->peer.log_error = NGX_ERROR_ERR;
-	// ngx_event_connect_peer(ngx_peer_connection_t *pc)	;
-
+	testcurl_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_testcurl_module);	
 	testcurl_conn_data *conn_data = add_conn_data(r, ctx);
-	ngx_str_set(&conn_data->addr_name, "127.0.0.1:9090/lua_test4?a=111&b=22");
+	// ngx_str_set(&conn_data->addr_name, uri);
+	conn_data->addr_name.data = (u_char *)uri;
+	conn_data->addr_name.len = strlen(uri);
 	int rc = ngx_http_testcurl_connect(r, conn_data);
 
 	ngx_connection_t *c;	
@@ -949,8 +957,33 @@ static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
     c->pool->log = c->log;
     c->read->log = c->log;
     c->write->log = c->log;
+	return rc;
+}
 
-    if (rc == NGX_AGAIN) {
+static ngx_int_t ngx_http_testcurl_handler(ngx_http_request_t *r)
+{
+	ngx_http_use_testcurl_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_testcurl_module);
+	if (conf->use_testcurl != 1) {
+		return NGX_OK;
+	}
+
+	testcurl_ctx_t *ctx = ngx_pcalloc(r->pool, sizeof(testcurl_ctx_t));
+	if (ctx == NULL)
+	{
+		return NGX_ERROR;
+	}
+	ngx_http_set_ctx(r, ctx, ngx_http_testcurl_module);
+
+	// ngx_parse_url    //域名解析
+    // u->peer.log = r->connection->log;
+    // u->peer.log_error = NGX_ERROR_ERR;
+	// ngx_event_connect_peer(ngx_peer_connection_t *pc)	;
+
+
+	int rc = ngx_http_testcurl_uri(r, "127.0.0.1:9090/lua_test4?a=111&b=22");
+	ngx_http_testcurl_uri(r, "127.0.0.1:9091/lua_test4?a=9091a&b=9091b");
+	
+	if (rc == NGX_AGAIN) {
     //     ngx_add_timer(c->write, u->conf->connect_timeout);
     //     return;
 		return NGX_DONE;

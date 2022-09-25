@@ -82,15 +82,18 @@ size_t get_buf_len(const mybuf_t *buf)
 	}
 	return ret;
 }
-void get_buf_data(const mybuf_t *buf, char *data)
+int get_buf_data(const mybuf_t *buf, char *data)
 {
+	size_t ret = 0;	
 	while (buf)
 	{
 		int len = buf->used;
+		ret += len;
 		memcpy(data, buf->buf, len);
 		data += buf->used;
 		buf = buf->next;
 	}
+	return ret;
 }
 char *alloc_buf_data(ngx_pool_t *pool, const mybuf_t *buf)
 {

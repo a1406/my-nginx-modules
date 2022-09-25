@@ -27,7 +27,7 @@ void my_append_str(ngx_pool_t *pool, const ngx_str_t *str, mybuf_t *mybuf);
 mybuf_t *get_recv_buf(ngx_pool_t *pool, mybuf_t *head, u_char **p, int *len);
 
 size_t get_buf_len(const mybuf_t *buf);
-void get_buf_data(const mybuf_t *buf, char *data);
+int get_buf_data(const mybuf_t *buf, char *data);
 char *alloc_buf_data(ngx_pool_t *pool, const mybuf_t *buf);
 
 #endif /* MYBUF_H */
